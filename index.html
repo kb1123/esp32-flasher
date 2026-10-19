@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
+<title>ESP32 Flasher</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>ESP32 Flasher</h1>
+    <p class="sub">Install firmware over USB, straight from your phone.</p>
+  </header>
+
+  <div class="banner bad" id="unsupported" hidden></div>
+
+  <section class="card" id="step1">
+    <div class="step"><span class="num">1</span><h2>Put the board in download mode</h2></div>
+    <ol class="howto">
+      <li>Hold the <b>BOOT</b> button on the board.</li>
+      <li>While holding it, plug the board into your phone with a USB-C OTG cable (or adapter).</li>
+      <li>Release BOOT after a second.</li>
+    </ol>
+    <p class="note">The board doesn't need Ethernet connected for this step.</p>
+  </section>
+
+  <section class="card" id="step2">
+    <div class="step"><span class="num">2</span><h2>Connect</h2></div>
+    <button id="connect" class="primary">Connect to board</button>
+    <p class="status" id="connStatus"></p>
+    <details class="small">
+      <summary>Board not in the list?</summary>
+      <p>Check that BOOT was held while plugging in, and that the cable carries data (some charge-only cables don't). You can also list every USB serial device:</p>
+      <button id="connectAny" class="secondary">Show all USB serial devices</button>
+    </details>
+  </section>
+
+  <section class="card" id="step3">
+    <div class="step"><span class="num">3</span><h2>Choose firmware</h2></div>
+    <div id="fwList" class="fwlist"><p class="status">Loading firmware list…</p></div>
+    <label class="fwopt" id="customOpt">
+      <input type="radio" name="fw" value="custom">
+      <span class="fwtext"><b>Your own .bin file</b><span class="mute">From your phone's storage</span></span>
+    </label>
+    <div id="customBox" hidden>
+      <input type="file" id="customFile" accept=".bin,application/octet-stream">
+      <label class="addr">Flash address
+        <input type="text" id="customAddr" value="0x0" inputmode="text" autocomplete="off" spellcheck="false">
+      </label>
+      <p class="note">Full-flash (merged) images go at <code>0x0</code>. App-only images go at <code>0x10000</code>.</p>
+    </div>
+    <p class="status" id="fwStatus"></p>
+    <label class="check"><input type="checkbox" id="eraseAll"> Erase entire flash first <span class="mute">(slower; wipes saved settings like the OTA password)</span></label>
+  </section>
+
+  <section class="card" id="step4">
+    <div class="step"><span class="num">4</span><h2>Install</h2></div>
+    <button id="flash" class="primary" disabled>Install firmware</button>
+    <div class="progress" aria-hidden="true"><i id="bar"></i></div>
+    <p class="status" id="flashStatus">Connect the board and choose firmware first.</p>
+    <div id="after" hidden>
+      <h3>Next</h3>
+      <ol class="howto">
+        <li>Unplug the USB cable (if the LED isn't blue yet, press <b>RESET</b>).</li>
+        <li>Plug Ethernet into your router and power the board.</li>
+        <li>Find its IP in your router's device list (named <code>esp32-ota</code>), or try <a href="http://esp32-ota.local" target="_blank" rel="noopener">esp32-ota.local</a>.</li>
+        <li>Log in with <code>admin</code> / <code>esp32ota</code> and change the password.</li>
+      </ol>
+    </div>
+  </section>
+
+  <details class="card log">
+    <summary>Technical log</summary>
+    <pre id="log"></pre>
+    <button id="copyLog" class="secondary">Copy log</button>
+  </details>
+
+  <footer>Uses <a href="https://github.com/espressif/esptool-js">esptool-js</a> and Google's <a href="https://github.com/google/web-serial-polyfill">WebUSB serial polyfill</a>. Nothing leaves your phone; the firmware is written directly over USB.</footer>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

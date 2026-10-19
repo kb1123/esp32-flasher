@@ -1,0 +1,16 @@
+{
+  "firmware": [
+    {
+      "id": "ota-base",
+      "name": "OTA base",
+      "version": "1.0.0",
+      "board": "Waveshare ESP32-S3-ETH",
+      "chip": "ESP32-S3",
+      "description": "Ethernet + web firmware upload + automatic rollback. Flash this once; update over the network after that.",
+      "file": "ota-base-FULL-FLASH-0x0.bin",
+      "address": 0,
+      "size": 715392,
+      "md5": "11f76ab150c3dcddc19ed96f71f434eb"
+    }
+  ]
+}
