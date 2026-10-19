@@ -1,13 +1,14 @@
 #pragma once
 #include <Arduino.h>
 
-static const char WEB_UI_HTML[] PROGMEM = R"HTML(<!doctype html>
+static const char OTA_WEB_UI_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ESP32 OTA</title>
+<title>Firmware update</title>
 <style>
 :root{--bg:#f4f5f7;--card:#fff;--ink:#16181d;--mute:#6b7280;--line:#e3e5e9;--acc:#2563eb;--ok:#15803d;--bad:#b91c1c;--warn:#a16207;--tint:#eef2ff}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--ink:#e8eaee;--mute:#9aa1ad;--line:#2a2e36;--acc:#60a5fa;--ok:#4ade80;--bad:#f87171;--warn:#facc15;--tint:#1c2433}}
+[hidden]{display:none!important}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 main{max-width:520px;margin:0 auto;padding:16px}
 h1{font-size:20px;margin:8px 0 14px}
@@ -29,10 +30,13 @@ button.sec{background:transparent;color:var(--ink);border:1px solid var(--line);
 .net span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.net small{color:var(--mute);flex:none}
 .row{display:flex;gap:8px}.row button{margin-top:0}
 </style></head><body><main>
-<h1 id="title">ESP32 OTA</h1>
+<p id="back" hidden style="margin:4px 0 0"><a href="/" style="color:var(--acc)">&larr; Back to the app</a></p>
+<h1 id="title">Firmware update</h1>
 <div class="card tip" id="hotspotTip" hidden>You're connected through the board's own hotspot. If this page stops loading, turn off mobile data, or tap "Stay connected" when Android says the network has no internet. If the file picker doesn't open in the sign-in window, open <b>http://192.168.4.1</b> in Chrome instead.</div>
 <div class="card" id="pwwarn" hidden><span class="warn">You're still using the default password (<b>esp32ota</b>). It protects the hotspot and this page, so change it below.</span></div>
 <div class="card"><h2>Device</h2><dl id="info"><dt>Status</dt><dd>loading…</dd></dl></div>
+<div class="card"><h2>Other firmware slot</h2><p class="msg" id="other" style="margin:0 0 10px">checking…</p>
+<button id="switch" class="sec" style="margin:0" hidden>Switch to it</button><div class="msg" id="swmsg"></div></div>
 <div class="card"><h2>Network</h2><dl id="net"><dt>Status</dt><dd>loading…</dd></dl></div>
 <div class="card"><h2>Update firmware</h2>
 <input type="file" id="file" accept=".bin">
@@ -62,7 +66,9 @@ function setMsg(id,t,k){$(id).textContent=t;$(id).className='msg'+(k?' '+k:'')}
 async function status(){const r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw 0;return r.json()}
 async function post(url,body){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body||{})});let j={};try{j=await r.json()}catch(e){}return j}
 async function refresh(){try{const s=await status();cur=s;
-$('title').textContent=s.fw+' v'+s.ver;$('pwwarn').hidden=!s.defaultPass;$('hotspotTip').hidden=s.via!=='hotspot';
+$('title').textContent=s.fw+' v'+s.ver;$('back').hidden=!s.appRoot;
+const o=s.other;$('other').innerHTML=!o.valid?'Empty. Nothing to switch to yet.':o.name?'<b>'+esc(o.name+' v'+o.ver)+'</b><br><span style="color:var(--mute)">built '+esc(o.built)+'</span>':'Firmware without a name tag (an older build).';
+$('switch').hidden=!o.valid;$('switch').textContent=o.name?'Switch to '+o.name+' v'+o.ver:'Switch to it';$('pwwarn').hidden=!s.defaultPass;$('hotspotTip').hidden=s.via!=='hotspot';
 $('info').innerHTML=row('Firmware',esc(s.fw+' '+s.ver))+row('Built',esc(s.built))+row('Slot',esc(s.partition)+(s.trial?' (on trial)':''))+row('Uptime',fmtUp(s.uptime))+row('Free heap',(s.heap/1024|0)+' KB')+row('Free PSRAM',(s.psram/1024|0)+' KB')+row('Max firmware',(s.maxApp/1048576).toFixed(1)+' MB');
 const st=s.sta,sta=st.state==='connected'?esc(st.ssid)+' · '+esc(st.ip)+' ('+bars(st.rssi)+')':st.state==='connecting'?'joining '+esc(st.ssid)+'…':st.state==='failed'?'<span class="bad">couldn’t join '+esc(st.ssid)+'</span>':'not set up';
 $('net').innerHTML=row('Hotspot',esc(s.ap.ssid)+' · '+esc(s.ap.ip)+' · '+s.ap.clients+' connected')+row('Home Wi-Fi',sta)+(s.eth?row('Ethernet',s.eth.up?esc(s.eth.ip):'unplugged'):'')+row('Name',esc(s.host)+'.local');
@@ -81,7 +87,7 @@ x.onerror=()=>{setMsg('msg','Connection lost during upload.','bad');$('go').disa
 x.open('POST','/api/update');x.send(fd)};
 async function waitBack(){const t0=Date.now();await new Promise(r=>setTimeout(r,4000));
 while(Date.now()-t0<150000){try{const s=await status();cur=s;await refresh();
-$('msg').innerHTML='Back online running <b>'+esc(s.fw+' '+s.ver)+'</b>. It’s confirmed after ~15 s; if it can’t start networking it rolls back automatically.';$('msg').className='msg ok';$('prog').style.width='0';return}catch(e){}
+$('switch').disabled=false;setMsg('swmsg','');$('msg').innerHTML='Back online running <b>'+esc(s.fw+' '+s.ver)+'</b>. It’s confirmed after ~15 s; if it can’t start networking it rolls back automatically.';$('msg').className='msg ok';$('prog').style.width='0';return}catch(e){}
 await new Promise(r=>setTimeout(r,2000))}
 setMsg('msg','The device hasn’t answered yet. Check you’re on its hotspot or network. If the new firmware is broken, the old one comes back within ~3 minutes.','warn')}
 // ---- Wi-Fi join
@@ -101,6 +107,10 @@ if(st.state==='connected'){$('wmsg').innerHTML='Joined. On that network, open <b
 if(st.state==='failed'){setMsg('wmsg','Couldn’t join. Check the password and that it’s a 2.4 GHz network.','bad');return}}catch(e){}}
 setMsg('wmsg','Still trying. Check the Network section in a moment.','warn')};
 $('forget').onclick=async()=>{if(!confirm('Forget the saved Wi-Fi network?'))return;const j=await post('/api/wifi/forget');setMsg('wmsg',j.ok?'Forgotten. The hotspot stays on.':'Failed',j.ok?'ok':'bad');refresh()};
+// ---- switch slot
+$('switch').onclick=async()=>{const o=cur&&cur.other;if(!confirm('Reboot into '+(o&&o.name?o.name+' v'+o.ver:'the other firmware')+'? You can switch back the same way from its update page.'))return;
+$('switch').disabled=true;const j=await post('/api/switch').catch(()=>({}));
+if(j.ok){setMsg('swmsg','Rebooting into the other firmware…','ok');waitBack()}else{setMsg('swmsg',j.error||'Failed','bad');$('switch').disabled=false}};
 // ---- password / reboot
 $('pw').onclick=async()=>{const j=await post('/api/password',{new:$('np').value}).catch(()=>({}));
 if(j.ok){setMsg('pwmsg',cur&&cur.via==='hotspot'?'Saved. The hotspot restarts with the new password, so rejoin it with that password.':'Saved. Your browser will ask you to log in again with the new password.','ok');$('np').value='';refresh()}

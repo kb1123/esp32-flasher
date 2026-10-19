@@ -1,71 +1,138 @@
-#include "ota_core.h"
-#include "config.h"
-#include "web_ui.h"
+#include "OtaCore.h"
+#include "OtaWebUi.h"
 
 #include <WiFi.h>
 #include <DNSServer.h>
-#if ETH_ENABLED
 #include <ETH.h>
-#endif
-#include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Update.h>
 #include <Preferences.h>
 #include "esp_ota_ops.h"
-#include "esp_app_desc.h"
+#include "esp_partition.h"
+#include "esp_random.h"
 
+extern "C" const char OTA_FW_TAG[];  // defined by OTA_FIRMWARE() in the sketch
+
+// ---------------------------------------------------------------- constants
+static const char *OTA_USER = "admin";
+static const char *OTA_DEFAULT_PASS = "esp32ota";
+static const uint32_t CONFIRM_AFTER_MS = 15000;   // trial firmware confirmed after this long with networking up
+static const uint32_t CONFIRM_DEADLINE_MS = 180000;
+static const uint32_t STA_GIVE_UP_MS = 45000;     // stop retrying a home network we never reached
+static const uint8_t AP_MAX_CLIENTS = 4;
+
+// ---------------------------------------------------------------- state
+static OtaConfig cfg;
+static bool ethEnabled = false;
 static WebServer server(80);
 static DNSServer dns;
 static Preferences prefs;
-static String otaPass;
-static String apSsid;
+static String otaPass, apSsid, token;
 
-// Network state (written from the network event task, read in loop)
-static volatile bool ethUp = false;
-static volatile bool staUp = false;
-static volatile bool apUp = false;
-static volatile uint32_t netUpSince = 0;   // first moment any interface was usable
+static volatile bool ethUp = false, staUp = false, apUp = false;
+static volatile uint32_t netUpSince = 0;
 
-// Home Wi-Fi (station) state
 enum StaState : uint8_t { STA_OFF, STA_CONNECTING, STA_CONNECTED, STA_FAILED };
 static volatile StaState staState = STA_OFF;
 static uint32_t staStartedAt = 0;
 static String staSsid;
-static const uint32_t STA_GIVE_UP_MS = 45000;  // stop retrying a network we never reached
 
-// OTA state
 static bool pendingVerify = false;
-static bool updating = false;
-static bool uploadOk = false;
+static bool updating = false, uploadOk = false;
 static String uploadError;
 static size_t uploadBytes = 0;
-static uint32_t rebootAt = 0;
-static uint32_t apRestartAt = 0;
+static uint32_t rebootAt = 0, apRestartAt = 0;
+
+// ---------------------------------------------------------------- firmware tags
+struct FwTag { bool valid = false; bool tagged = false; String name, version, built; };
+static FwTag otherSlot;
+static bool otherSlotKnown = false;
+
+static FwTag parseTag(const char *s, size_t n) {
+  // "\x01OTAFW|name|version|built|"
+  FwTag t;
+  String str(s, n);
+  int a = str.indexOf('|'), b = str.indexOf('|', a + 1), c = str.indexOf('|', b + 1), d = str.indexOf('|', c + 1);
+  if (a < 0 || b < 0 || c < 0 || d < 0) return t;
+  t.valid = t.tagged = true;
+  t.name = str.substring(a + 1, b);
+  t.version = str.substring(b + 1, c);
+  t.built = str.substring(c + 1, d);
+  return t;
+}
+
+static FwTag ownTag() { return parseTag(OTA_FW_TAG, strnlen(OTA_FW_TAG, 160)); }
+
+// Length of the app image in a partition, by walking its segment headers. 0 if not an image.
+static size_t imageLength(const esp_partition_t *p) {
+  uint8_t hdr[24];
+  if (esp_partition_read(p, 0, hdr, sizeof(hdr)) != ESP_OK || hdr[0] != 0xE9) return 0;
+  size_t off = 24;
+  for (int i = 0; i < hdr[1] && i < 16; i++) {
+    uint32_t seg[2];
+    if (esp_partition_read(p, off, seg, 8) != ESP_OK) return 0;
+    if (seg[1] > p->size) return 0;
+    off += 8 + seg[1];
+    if (off > p->size) return 0;
+  }
+  return off;
+}
+
+// Identify the firmware in the slot we're NOT running from (where "switch back" goes).
+static void scanOtherSlot() {
+  otherSlot = FwTag();
+  otherSlotKnown = true;
+  const esp_partition_t *p = esp_ota_get_next_update_partition(NULL);
+  esp_app_desc_t desc;
+  if (!p || esp_ota_get_partition_description(p, &desc) != ESP_OK) return;
+  size_t len = imageLength(p);
+  if (!len) return;
+  otherSlot.valid = true;
+  static const char needle[] = "\x01OTAFW|";
+  const size_t nlen = sizeof(needle) - 1, chunk = 4096, keep = 192;
+  uint8_t *buf = (uint8_t *)malloc(chunk + keep);
+  if (!buf) return;
+  size_t carry = 0;
+  for (size_t off = 0; off < len; off += chunk) {
+    size_t n = min(chunk, len - off);
+    if (esp_partition_read(p, off, buf + carry, n) != ESP_OK) break;
+    size_t total = carry + n;
+    for (size_t i = 0; i + nlen <= total; i++) {
+      if (buf[i] == 0x01 && memcmp(buf + i, needle, nlen) == 0) {
+        size_t avail = total - i;
+        if (avail < 160 && off + n < len) break;  // tag may straddle the chunk; get more first
+        FwTag t = parseTag((const char *)buf + i, strnlen((const char *)buf + i, min(avail, (size_t)160)));
+        if (t.tagged) { otherSlot = t; free(buf); return; }
+      }
+    }
+    carry = min(keep, total);
+    memmove(buf, buf + total - carry, carry);
+  }
+  free(buf);
+}
 
 // ---------------------------------------------------------------- rollback
-// Tell the core not to auto-confirm a new OTA image; we confirm it ourselves
-// only after it proves it can bring networking up and keep running.
+// Don't let the core auto-confirm new images; we confirm once networking is up.
 bool verifyRollbackLater() { return true; }
 
 static void checkPendingVerify() {
   const esp_partition_t *running = esp_ota_get_running_partition();
   esp_ota_img_states_t state;
-  if (esp_ota_get_state_partition(running, &state) == ESP_OK &&
-      state == ESP_OTA_IMG_PENDING_VERIFY) {
+  if (esp_ota_get_state_partition(running, &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY) {
     pendingVerify = true;
     Serial.println("[ota] new firmware on trial, waiting for network before confirming");
   } else {
-    esp_ota_mark_app_valid_cancel_rollback();  // USB-flashed or already confirmed
+    esp_ota_mark_app_valid_cancel_rollback();
   }
 }
 
 static void serviceRollback() {
   if (!pendingVerify) return;
-  if (netUpSince && millis() - netUpSince > OTA_CONFIRM_AFTER_MS) {
+  if (netUpSince && millis() - netUpSince > CONFIRM_AFTER_MS) {
     esp_ota_mark_app_valid_cancel_rollback();
     pendingVerify = false;
     Serial.println("[ota] firmware confirmed good");
-  } else if (millis() > OTA_CONFIRM_DEADLINE_MS) {
+  } else if (millis() > CONFIRM_DEADLINE_MS) {
     Serial.println("[ota] networking never came up on trial firmware, rolling back");
     delay(100);
     esp_ota_mark_app_invalid_rollback_and_reboot();
@@ -73,38 +140,33 @@ static void serviceRollback() {
 }
 
 // ---------------------------------------------------------------- LED
-void otaSetLed(uint8_t r, uint8_t g, uint8_t b) { rgbLedWrite(STATUS_LED_PIN, r, g, b); }
+void otaSetLed(uint8_t r, uint8_t g, uint8_t b) {
+  if (cfg.ledPin >= 0) rgbLedWrite(cfg.ledPin, r, g, b);
+}
 
 // ---------------------------------------------------------------- network
 static void markNetUp() { if (!netUpSince) netUpSince = millis() | 1; }
 
 static void onNetEvent(arduino_event_id_t event, arduino_event_info_t) {
   switch (event) {
-#if ETH_ENABLED
-    case ARDUINO_EVENT_ETH_START: ETH.setHostname(OTA_HOSTNAME); break;
+    case ARDUINO_EVENT_ETH_START: ETH.setHostname(cfg.hostname); break;
     case ARDUINO_EVENT_ETH_GOT_IP:
       Serial.printf("[eth] IP %s\n", ETH.localIP().toString().c_str());
-      ethUp = true; markNetUp();
-      break;
+      ethUp = true; markNetUp(); break;
     case ARDUINO_EVENT_ETH_LOST_IP:
     case ARDUINO_EVENT_ETH_DISCONNECTED:
-    case ARDUINO_EVENT_ETH_STOP:
-      ethUp = false;
-      break;
-#endif
+    case ARDUINO_EVENT_ETH_STOP: ethUp = false; break;
     case ARDUINO_EVENT_WIFI_AP_START:
       Serial.printf("[ap] hotspot %s up at %s\n", apSsid.c_str(), WiFi.softAPIP().toString().c_str());
-      apUp = true; markNetUp();
-      break;
+      apUp = true; markNetUp(); break;
     case ARDUINO_EVENT_WIFI_AP_STOP: apUp = false; break;
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       Serial.printf("[wifi] joined %s, IP %s\n", staSsid.c_str(), WiFi.localIP().toString().c_str());
-      staUp = true; staState = STA_CONNECTED; markNetUp();
-      break;
+      staUp = true; staState = STA_CONNECTED; markNetUp(); break;
     case ARDUINO_EVENT_WIFI_STA_LOST_IP:
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       staUp = false;
-      if (staState == STA_CONNECTED) staState = STA_CONNECTING;  // auto-reconnect is on
+      if (staState == STA_CONNECTED) staState = STA_CONNECTING;
       break;
     default: break;
   }
@@ -113,21 +175,18 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t) {
 bool otaNetworkUp() { return ethUp || staUp; }
 bool otaHotspotUp() { return apUp; }
 bool otaUpdateRunning() { return updating; }
+WebServer &otaServer() { return server; }
+const String &otaToken() { return token; }
 
-static void startHotspot() {
-  WiFi.softAP(apSsid.c_str(), otaPass.c_str(), AP_CHANNEL, 0, AP_MAX_CLIENTS);
-}
+static void startHotspot() { WiFi.softAP(apSsid.c_str(), otaPass.c_str(), cfg.apChannel, 0, AP_MAX_CLIENTS); }
 
 static void startStation(const String &ssid, const String &pass) {
-  staSsid = ssid;
-  staState = STA_CONNECTING;
-  staStartedAt = millis();
+  staSsid = ssid; staState = STA_CONNECTING; staStartedAt = millis();
   WiFi.setAutoReconnect(true);
   WiFi.begin(ssid.c_str(), pass.length() ? pass.c_str() : nullptr);
 }
 
-// A station that keeps failing makes the hotspot hop channels and drop your
-// phone, so give up on a network we have never managed to join.
+// A station that keeps failing makes the hotspot hop channels and drop your phone.
 static void serviceStation() {
   if (staState == STA_CONNECTING && !staUp && millis() - staStartedAt > STA_GIVE_UP_MS) {
     Serial.printf("[wifi] couldn't join %s, giving up\n", staSsid.c_str());
@@ -138,28 +197,26 @@ static void serviceStation() {
 }
 
 // ---------------------------------------------------------------- web helpers
-static bool fromHotspot() {
-  return server.client().localIP() == WiFi.softAPIP();
-}
+static bool fromHotspot() { return server.client().localIP() == WiFi.softAPIP(); }
 
-// Hotspot clients already proved they know the password (WPA2). Everyone else
-// (Ethernet, home Wi-Fi) gets a browser login prompt.
-static bool auth() {
+// Hotspot clients already proved they know the password (WPA2); others get a login prompt.
+bool otaAuthorize() {
   if (fromHotspot()) return true;
   if (server.authenticate(OTA_USER, otaPass.c_str())) return true;
-  server.requestAuthentication(BASIC_AUTH, "ESP32 OTA");
+  server.requestAuthentication(BASIC_AUTH, "ESP32");
   return false;
 }
 
-static String jsonEscape(const char *s) {
+static String jsonEscape(const String &s) {
   String o;
-  for (; *s; s++) {
-    if (*s == '"' || *s == '\\') o += '\\';
-    if ((uint8_t)*s >= 0x20) o += *s;
+  for (size_t i = 0; i < s.length(); i++) {
+    char ch = s[i];
+    if (ch == '"' || ch == '\\') o += '\\';
+    if ((uint8_t)ch >= 0x20) o += ch;
   }
   return o;
 }
-static String jstr(const String &s) { return "\"" + jsonEscape(s.c_str()) + "\""; }
+static String jstr(const String &s) { return "\"" + jsonEscape(s) + "\""; }
 static void sendJson(int code, const String &j) {
   server.sendHeader("Cache-Control", "no-store");
   server.send(code, "application/json", j);
@@ -167,52 +224,45 @@ static void sendJson(int code, const String &j) {
 
 // ---------------------------------------------------------------- handlers
 static void handleStatus() {
-  if (!auth()) return;
-  const esp_app_desc_t *app = esp_app_get_description();
+  if (!otaAuthorize()) return;
+  if (!otherSlotKnown) scanOtherSlot();
+  FwTag me = ownTag();
   const esp_partition_t *run = esp_ota_get_running_partition();
   static const char *staNames[] = {"off", "connecting", "connected", "failed"};
   String j = "{";
-  j += "\"fw\":\"" FW_NAME "\",\"ver\":\"" FW_VERSION "\"";
-  j += ",\"built\":" + jstr(String(app->date) + " " + app->time);
+  j += "\"fw\":" + jstr(cfg.name) + ",\"ver\":" + jstr(cfg.version) + ",\"built\":" + jstr(me.built);
   j += ",\"partition\":" + jstr(run->label);
   j += ",\"trial\":" + String(pendingVerify ? "true" : "false");
-  j += ",\"host\":\"" OTA_HOSTNAME "\"";
+  j += ",\"appRoot\":" + String(cfg.appOwnsRoot ? "true" : "false");
+  j += ",\"other\":{\"valid\":" + String(otherSlot.valid ? "true" : "false") +
+       ",\"name\":" + jstr(otherSlot.name) + ",\"ver\":" + jstr(otherSlot.version) + ",\"built\":" + jstr(otherSlot.built) + "}";
+  j += ",\"host\":" + jstr(cfg.hostname);
   j += ",\"via\":\"" + String(fromHotspot() ? "hotspot" : "network") + "\"";
   j += ",\"ap\":{\"ssid\":" + jstr(apSsid) + ",\"ip\":" + jstr(WiFi.softAPIP().toString()) +
        ",\"clients\":" + String(WiFi.softAPgetStationNum()) + "}";
   j += ",\"sta\":{\"state\":\"" + String(staNames[staState]) + "\",\"ssid\":" + jstr(staSsid) +
-       ",\"ip\":" + jstr(staUp ? WiFi.localIP().toString() : String("")) +
-       ",\"rssi\":" + String(staUp ? WiFi.RSSI() : 0) + "}";
-#if ETH_ENABLED
-  j += ",\"eth\":{\"up\":" + String(ethUp ? "true" : "false") + ",\"ip\":" +
-       jstr(ethUp ? ETH.localIP().toString() : String("")) + ",\"mac\":" + jstr(ETH.macAddress()) + "}";
-#else
-  j += ",\"eth\":null";
-#endif
+       ",\"ip\":" + jstr(staUp ? WiFi.localIP().toString() : String("")) + ",\"rssi\":" + String(staUp ? WiFi.RSSI() : 0) + "}";
+  if (ethEnabled)
+    j += ",\"eth\":{\"up\":" + String(ethUp ? "true" : "false") + ",\"ip\":" +
+         jstr(ethUp ? ETH.localIP().toString() : String("")) + "}";
+  else
+    j += ",\"eth\":null";
   j += ",\"uptime\":" + String(millis() / 1000);
-  j += ",\"heap\":" + String(ESP.getFreeHeap());
-  j += ",\"psram\":" + String(ESP.getFreePsram());
+  j += ",\"heap\":" + String(ESP.getFreeHeap()) + ",\"psram\":" + String(ESP.getFreePsram());
   j += ",\"maxApp\":" + String(esp_ota_get_next_update_partition(NULL)->size);
   j += ",\"defaultPass\":" + String(otaPass == OTA_DEFAULT_PASS ? "true" : "false");
   j += "}";
   sendJson(200, j);
 }
 
-// Validate the first chunk: must be an ESP32-S3 *app* image, not a merged
-// full-flash image (which starts with the bootloader) or another chip's build.
+// First chunk must be an ESP32-S3 app image (not a merged full-flash image).
 static bool validateHeader(const uint8_t *buf, size_t len) {
   if (len < 0x24) { uploadError = "file too small"; return false; }
   if (buf[0] != 0xE9) { uploadError = "not an ESP32 firmware image"; return false; }
   uint16_t chip = buf[12] | (buf[13] << 8);
-  if (chip != 9 /* ESP32-S3 */) {
-    uploadError = "firmware is for a different chip (id " + String(chip) + ")";
-    return false;
-  }
+  if (chip != 9) { uploadError = "firmware is for a different chip (id " + String(chip) + ")"; return false; }
   uint32_t magic = buf[0x20] | (buf[0x21] << 8) | (buf[0x22] << 16) | ((uint32_t)buf[0x23] << 24);
-  if (magic != 0xABCD5432) {
-    uploadError = "this looks like a full-flash (merged) image; upload the app .bin instead";
-    return false;
-  }
+  if (magic != 0xABCD5432) { uploadError = "this looks like a full-flash (merged) image; upload the app .bin instead"; return false; }
   return true;
 }
 
@@ -240,15 +290,17 @@ static void handleUploadChunk() {
     }
     if (!uploadOk && Update.isRunning()) Update.abort();
     updating = false;
+    otherSlotKnown = false;  // the other slot was (partly) overwritten
   } else if (up.status == UPLOAD_FILE_ABORTED) {
     if (Update.isRunning()) Update.abort();
     uploadError = "upload aborted";
     updating = false;
+    otherSlotKnown = false;
   }
 }
 
 static void handleUploadDone() {
-  if (!auth()) return;
+  if (!otaAuthorize()) return;
   if (uploadOk) {
     sendJson(200, "{\"ok\":true,\"bytes\":" + String(uploadBytes) + "}");
     Serial.printf("[ota] %u bytes written, rebooting\n", (unsigned)uploadBytes);
@@ -259,27 +311,38 @@ static void handleUploadDone() {
   }
 }
 
-static void handlePassword() {
-  if (!auth()) return;
-  String np = server.arg("new");
-  if (np.length() < 8 || np.length() > 63) {
-    sendJson(400, "{\"ok\":false,\"error\":\"use 8 to 63 characters\"}");
+// Boot the firmware in the other slot (the previous one, unless an upload replaced it).
+static void handleSwitch() {
+  if (!otaAuthorize()) return;
+  const esp_partition_t *p = esp_ota_get_next_update_partition(NULL);
+  esp_err_t err = p ? esp_ota_set_boot_partition(p) : ESP_ERR_NOT_FOUND;  // validates the image first
+  if (err != ESP_OK) {
+    sendJson(400, "{\"ok\":false,\"error\":" + jstr(String("the other slot has no valid firmware (") + esp_err_to_name(err) + ")") + "}");
     return;
   }
+  Serial.printf("[ota] switching to %s\n", p->label);
+  sendJson(200, "{\"ok\":true}");
+  rebootAt = millis() + 800;
+}
+
+static void handlePassword() {
+  if (!otaAuthorize()) return;
+  String np = server.arg("new");
+  if (np.length() < 8 || np.length() > 63) { sendJson(400, "{\"ok\":false,\"error\":\"use 8 to 63 characters\"}"); return; }
   prefs.putString("pass", np);
   otaPass = np;
   sendJson(200, "{\"ok\":true}");
-  apRestartAt = millis() + 1500;  // hotspot password changes too; let the reply get out first
+  apRestartAt = millis() + 1500;  // the hotspot password changes too
 }
 
 static void handleReboot() {
-  if (!auth()) return;
+  if (!otaAuthorize()) return;
   sendJson(200, "{\"ok\":true}");
   rebootAt = millis() + 500;
 }
 
 static void handleScan() {
-  if (!auth()) return;
+  if (!otaAuthorize()) return;
   int16_t n = WiFi.scanComplete();
   if (server.hasArg("start") || n == WIFI_SCAN_FAILED) {
     if (n != WIFI_SCAN_RUNNING) { WiFi.scanDelete(); WiFi.scanNetworks(true, false); }
@@ -291,10 +354,10 @@ static void handleScan() {
   int shown = 0;
   for (int i = 0; i < n && shown < 30; i++) {
     String ssid = WiFi.SSID(i);
-    if (!ssid.length()) continue;  // hidden networks
+    if (!ssid.length()) continue;
     bool dup = false;
     for (int k = 0; k < i; k++) if (WiFi.SSID(k) == ssid) { dup = true; break; }
-    if (dup) continue;             // keep only the strongest entry per name
+    if (dup) continue;
     if (shown++) j += ",";
     j += "{\"ssid\":" + jstr(ssid) + ",\"rssi\":" + String(WiFi.RSSI(i)) +
          ",\"open\":" + String(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "true" : "false") + "}";
@@ -304,7 +367,7 @@ static void handleScan() {
 }
 
 static void handleWifiJoin() {
-  if (!auth()) return;
+  if (!otaAuthorize()) return;
   String ssid = server.arg("ssid"), pass = server.arg("pass");
   if (!ssid.length() || ssid.length() > 32) { sendJson(400, "{\"ok\":false,\"error\":\"network name required\"}"); return; }
   if (pass.length() && (pass.length() < 8 || pass.length() > 63)) {
@@ -320,7 +383,7 @@ static void handleWifiJoin() {
 }
 
 static void handleWifiForget() {
-  if (!auth()) return;
+  if (!otaAuthorize()) return;
   prefs.remove("ssid"); prefs.remove("wpass");
   WiFi.setAutoReconnect(false);
   WiFi.disconnect(false, true);
@@ -328,28 +391,33 @@ static void handleWifiForget() {
   sendJson(200, "{\"ok\":true}");
 }
 
-static void handleRoot() {
-  if (!auth()) return;
+static void handleUpdatePage() {
+  if (!otaAuthorize()) return;
   server.sendHeader("Cache-Control", "no-store");
-  server.send_P(200, "text/html", WEB_UI_HTML);
+  server.send_P(200, "text/html", OTA_WEB_UI_HTML);
 }
 
-// Phones probe a known URL when they join Wi-Fi. Answering hotspot clients with
-// a redirect makes Android/iOS show "Sign in to network" and open this page.
-static void captiveRedirect() {
-  server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
-  server.send(302, "text/plain", "");
-}
-
+// Phones probe a known URL after joining Wi-Fi; redirecting hotspot clients makes
+// Android/iOS show "Sign in to network" and open our front page.
 static void handleNotFound() {
-  if (fromHotspot()) { captiveRedirect(); return; }
+  if (fromHotspot()) {
+    server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+    server.send(302, "text/plain", "");
+    return;
+  }
   server.send(404, "text/plain", "not found");
 }
 
 // ---------------------------------------------------------------- public
-void otaCoreBegin() {
+void otaCoreBegin(const OtaConfig &c) {
+  cfg = c;
+  ethEnabled = cfg.ethSck >= 0 && cfg.ethMiso >= 0 && cfg.ethMosi >= 0 && cfg.ethCs >= 0;
   Serial.begin(115200);
   otaSetLed(0, 0, 25);
+
+  char tok[17];
+  snprintf(tok, sizeof(tok), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
+  token = tok;
 
   prefs.begin("ota", false);
   otaPass = prefs.getString("pass", OTA_DEFAULT_PASS);
@@ -357,15 +425,14 @@ void otaCoreBegin() {
   checkPendingVerify();
   Network.onEvent(onNetEvent);
 
-  // Wi-Fi: hotspot always, plus home network if one was saved
-  WiFi.persistent(false);          // we keep credentials in our own prefs
-  WiFi.setHostname(OTA_HOSTNAME);
+  WiFi.persistent(false);
+  WiFi.setHostname(cfg.hostname);
   WiFi.mode(WIFI_AP_STA);
   uint8_t mac[6];
   WiFi.softAPmacAddress(mac);
   char suffix[5];
   snprintf(suffix, sizeof(suffix), "%02X%02X", mac[4], mac[5]);
-  apSsid = String(AP_SSID_PREFIX) + suffix;
+  apSsid = String(cfg.apPrefix) + suffix;
   startHotspot();
   dns.setTTL(30);
   dns.start(53, "*", WiFi.softAPIP());
@@ -373,18 +440,19 @@ void otaCoreBegin() {
   String savedSsid = prefs.getString("ssid", "");
   if (savedSsid.length()) startStation(savedSsid, prefs.getString("wpass", ""));
 
-#if ETH_ENABLED
-  if (!ETH.begin(ETH_PHY_W5500, 1, ETH_PIN_CS, ETH_PIN_INT, ETH_PIN_RST,
-                 SPI2_HOST, ETH_PIN_SCK, ETH_PIN_MISO, ETH_PIN_MOSI)) {
+  if (ethEnabled && !ETH.begin(ETH_PHY_W5500, 1, cfg.ethCs, cfg.ethInt, cfg.ethRst, SPI2_HOST,
+                               cfg.ethSck, cfg.ethMiso, cfg.ethMosi)) {
     Serial.println("[eth] W5500 init failed");
   }
-#endif
 
-  if (MDNS.begin(OTA_HOSTNAME)) MDNS.addService("http", "tcp", 80);
+  if (MDNS.begin(cfg.hostname)) MDNS.addService("http", "tcp", 80);
 
-  server.on("/", HTTP_GET, handleRoot);
+  // The update page always lives at /update. "/" shows it too unless the app takes over.
+  server.on("/update", HTTP_GET, handleUpdatePage);
+  if (!cfg.appOwnsRoot) server.on("/", HTTP_GET, handleUpdatePage);
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/update", HTTP_POST, handleUploadDone, handleUploadChunk);
+  server.on("/api/switch", HTTP_POST, handleSwitch);
   server.on("/api/password", HTTP_POST, handlePassword);
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/wifi/scan", HTTP_GET, handleScan);

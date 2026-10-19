@@ -12,7 +12,7 @@ import { flashImages, inspectImage, requestPort } from "../flasher-core.js";
 import { EspS3Emulator, FakeUsbDevice } from "./sim.mjs";
 
 const fw = new Uint8Array(readFileSync(new URL("../firmware/ota-base-FULL-FLASH-0x0.bin", import.meta.url)));
-const app = new Uint8Array(readFileSync(new URL("../firmware-src/ota-base-v1.1.0-OTA.bin", import.meta.url)));
+const app = new Uint8Array(readFileSync(new URL("../builds/ota-base-v1.2.0-OTA.bin", import.meta.url)));
 let failures = 0;
 const check = (cond, msg) => { console.log((cond ? "  PASS " : "  FAIL ") + msg); if (!cond) failures++; };
 

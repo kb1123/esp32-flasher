@@ -31,7 +31,18 @@ Put the `.bin` in `firmware/` and add an entry to `firmware/manifest.json` with 
 | `lib/polyfill/` | web-serial-polyfill 1.0.15 (Apache-2.0) |
 | `firmware/` | Bundled images + manifest |
 
-## Also in this repo
+## Firmware
 
-- `firmware-src/ota-base/`: Arduino source of the bundled OTA base firmware v1.1.0: Wi-Fi hotspot with captive portal, optional home Wi-Fi, Ethernet (Waveshare ESP32-S3-ETH, arduino-esp32 3.3.12, 16 MB flash, OPI PSRAM, two 3 MB OTA slots).
-- `tests/`: runs the real flasher code against a simulated ESP32-S3 over a fake WebUSB device: `node tests/run.mjs` (Node 22+).
+| Path | What |
+| --- | --- |
+| `firmware-src/libraries/OtaCore/` | Shared library every firmware links: Wi-Fi hotspot with captive portal, home Wi-Fi, Ethernet, the update page at `/update`, automatic rollback, and switching back to the firmware in the other slot. |
+| `firmware-src/ota-base/` | The starting firmware: just OtaCore plus a status LED. Copy it to start a new project. |
+| `firmware-src/camera-viewer/` | Live camera feed on the hotspot's front page (MJPEG on port 81), with snapshot and picture controls. |
+| `firmware-src/build.sh` | `./build.sh <sketch-folder>` builds the `-OTA.bin` and the `-FULL-FLASH-0x0.bin`. |
+| `builds/` | Ready-to-upload `-OTA.bin` files. |
+
+New project checklist: copy `ota-base`, change `OTA_FIRMWARE("name", "version")`, keep `otaCoreBegin()` / `otaCoreLoop()`, never block `loop()` for long, and set `appOwnsRoot = true` if your app serves `/`.
+
+## Tests
+
+`node tests/run.mjs` (Node 22+) runs the real flasher code against a simulated ESP32-S3 over a fake WebUSB device.

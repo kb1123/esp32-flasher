@@ -3,14 +3,26 @@
     {
       "id": "ota-base",
       "name": "OTA base",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "board": "Waveshare ESP32-S3-ETH",
       "chip": "ESP32-S3",
       "description": "Wi-Fi hotspot (ESP32-OTA-XXXX, password esp32ota) with the update page at 192.168.4.1, plus Ethernet and optional home Wi-Fi. Flash once; update wirelessly after that.",
       "file": "ota-base-FULL-FLASH-0x0.bin",
       "address": 0,
-      "size": 1145664,
-      "md5": "a2e24755a737f898b84363d8c94ff4ff"
+      "size": 1150080,
+      "md5": "000700e055f1906fa36acd01379b19ab"
+    },
+    {
+      "id": "camera-viewer",
+      "name": "Camera viewer",
+      "version": "1.0.0",
+      "board": "Waveshare ESP32-S3-ETH",
+      "chip": "ESP32-S3",
+      "description": "Live camera feed on the hotspot's sign-in page, with the same update page at /update.",
+      "file": "camera-viewer-FULL-FLASH-0x0.bin",
+      "address": 0,
+      "size": 1270224,
+      "md5": "6e43842e4ace31c10f81acdd973ea0cb"
     }
   ]
 }
