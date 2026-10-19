@@ -33,5 +33,5 @@ Put the `.bin` in `firmware/` and add an entry to `firmware/manifest.json` with 
 
 ## Also in this repo
 
-- `firmware-src/ota-base/`: Arduino source of the bundled OTA base firmware (Waveshare ESP32-S3-ETH, arduino-esp32 3.3.12, 16 MB flash, OPI PSRAM, two 3 MB OTA slots).
+- `firmware-src/ota-base/`: Arduino source of the bundled OTA base firmware v1.1.0: Wi-Fi hotspot with captive portal, optional home Wi-Fi, Ethernet (Waveshare ESP32-S3-ETH, arduino-esp32 3.3.12, 16 MB flash, OPI PSRAM, two 3 MB OTA slots).
 - `tests/`: runs the real flasher code against a simulated ESP32-S3 over a fake WebUSB device: `node tests/run.mjs` (Node 22+).
