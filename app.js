@@ -39,7 +39,7 @@ if (support.kind === "none") {
 async function connect(anyDevice) {
   if (state.busy) return;
   try {
-    const port = await requestPort({ anyDevice });
+    const port = await requestPort({ anyDevice, log });
     state.port = port;
     const info = port.getInfo ? port.getInfo() : {};
     const id = info.usbVendorId !== undefined
@@ -50,7 +50,11 @@ async function connect(anyDevice) {
     $("step2").querySelector(".step").classList.add("done");
   } catch (e) {
     if (e && (e.name === "NotFoundError" || /No device selected/i.test(e.message))) {
-      setStatus("connStatus", "No board chosen. If the list was empty, re-do step 1 while holding BOOT.", "warn");
+      log(`Picker closed with nothing chosen (${anyDevice ? "all devices" : "Espressif only"}).`);
+      setStatus("connStatus", anyDevice
+        ? "Your phone isn't seeing any USB device. Check the troubleshooting list below."
+        : "No board chosen. If the list was empty, try \u201cShow every USB device\u201d below.", "warn");
+      document.querySelector("details.small").open = true;
     } else {
       setStatus("connStatus", "Couldn't open USB: " + (e?.message ?? e), "bad");
       log("requestPort error: " + (e?.stack ?? e));

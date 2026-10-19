@@ -1,6 +1,6 @@
 // Flashing logic, kept free of any page/DOM code so it can be tested on its own.
 import { ESPLoader, Transport } from "./lib/esptool/index.js";
-import { serial as usbSerialPolyfill } from "./lib/polyfill/serial.js";
+import { SerialPort as UsbSerialPort } from "./lib/polyfill/serial.js";
 import { md5Hex } from "./md5.js";
 
 export const ESPRESSIF_VID = 0x303a;
@@ -19,16 +19,47 @@ export function transportSupport(nav = globalThis.navigator) {
   return { kind: "none", reason: "unsupported" };
 }
 
+const USB_CLASS_NAMES = {
+  0x00: "per-interface", 0x01: "audio", 0x02: "CDC control (serial)", 0x03: "HID", 0x08: "mass storage",
+  0x09: "hub", 0x0a: "CDC data (serial)", 0xe0: "wireless", 0xef: "misc", 0xfe: "app-specific", 0xff: "vendor-specific",
+};
+const hex4 = (n) => (n ?? 0).toString(16).padStart(4, "0");
+
+/** Human-readable summary of a WebUSB device, for the log. */
+export function describeUsbDevice(dev) {
+  const cfg = dev.configuration ?? dev.configurations?.[0];
+  const ifaces = (cfg?.interfaces ?? []).map((i) => {
+    const c = i.alternates?.[0]?.interfaceClass;
+    return `#${i.interfaceNumber} ${USB_CLASS_NAMES[c] ?? "class 0x" + (c ?? 0).toString(16)}`;
+  });
+  return `${hex4(dev.vendorId)}:${hex4(dev.productId)} "${dev.manufacturerName ?? "?"} / ${dev.productName ?? "?"}"` +
+    ` class 0x${(dev.deviceClass ?? 0).toString(16)}; ${cfg ? "interfaces: " + (ifaces.join(", ") || "none") : "no configuration info"}`;
+}
+
 /**
  * Ask the user to pick the board. On Android (no Web Serial) this goes through
  * WebUSB plus Google's CDC-ACM polyfill, which matches the ESP32-S3 built-in USB.
- * @param {{anyDevice?: boolean}} opts anyDevice=true lists every USB serial device.
+ *
+ * Filters by vendor only. The polyfill's own requestPort() also adds an
+ * interface-class filter, which some Android Chrome builds fail to match even
+ * when the board is attached ("No compatible devices found").
+ * @param {{anyDevice?: boolean, log?: (s: string) => void}} opts anyDevice=true lists every USB device.
  */
-export async function requestPort({ anyDevice = false } = {}) {
+export async function requestPort({ anyDevice = false, log = () => {} } = {}) {
   const support = transportSupport();
-  const filters = anyDevice ? [] : [{ usbVendorId: ESPRESSIF_VID }];
-  if (support.kind === "webserial") return navigator.serial.requestPort({ filters });
-  if (support.kind === "webusb") return usbSerialPolyfill.requestPort({ filters });
+  if (support.kind === "webserial") {
+    return navigator.serial.requestPort({ filters: anyDevice ? [] : [{ usbVendorId: ESPRESSIF_VID }] });
+  }
+  if (support.kind === "webusb") {
+    const device = await navigator.usb.requestDevice({ filters: anyDevice ? [] : [{ vendorId: ESPRESSIF_VID }] });
+    log("USB device: " + describeUsbDevice(device));
+    try {
+      return new UsbSerialPort(device);
+    } catch (e) {
+      throw new Error(`That device (${hex4(device.vendorId)}:${hex4(device.productId)}) has no USB serial interface, so it can't be flashed this way. ` +
+        "If it's the ESP32, it isn't in download mode: hold BOOT while plugging it in.");
+    }
+  }
   throw new Error(support.reason === "insecure"
     ? "This page must be opened over https:// for USB access."
     : "This browser has no USB access. Use Chrome on Android or desktop.");

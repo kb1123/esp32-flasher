@@ -8,7 +8,7 @@ globalThis.fetch = async (u, o) => {
   return realFetch(u, o);
 };
 import { SerialPort } from "../lib/polyfill/serial.js";
-import { flashImages, inspectImage } from "../flasher-core.js";
+import { flashImages, inspectImage, requestPort } from "../flasher-core.js";
 import { EspS3Emulator, FakeUsbDevice } from "./sim.mjs";
 
 const fw = new Uint8Array(readFileSync(new URL("../firmware/ota-base-FULL-FLASH-0x0.bin", import.meta.url)));
@@ -87,6 +87,26 @@ check(!inspectImage(app, 0).ok, `app image at 0x0 refused: ${inspectImage(app, 0
 check(inspectImage(app, 0x10000).ok, "app image at 0x10000 accepted");
 check(!inspectImage(new Uint8Array([1, 2, 3]), 0).ok, "random data at 0x0 refused");
 check(!inspectImage(new Uint8Array(0), 0).ok, "empty file refused");
+
+// 8. Device picker (Android WebUSB path)
+console.log("\n== device picker");
+{
+  const seen = [];
+  globalThis.isSecureContext = true;
+  const esp = new FakeUsbDevice(new EspS3Emulator());
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { usb: { requestDevice: async (o) => { seen.push(o.filters); return esp; } } } });
+  const logs = [];
+  const port = await requestPort({ log: (l) => logs.push(l) });
+  check(JSON.stringify(seen[0]) === JSON.stringify([{ vendorId: 0x303a }]), `Espressif picker filters by vendor only: ${JSON.stringify(seen[0])}`);
+  check(port instanceof SerialPort, "returns a polyfilled serial port");
+  check(logs.some((l) => /303a:1001/.test(l) && /CDC control/.test(l)), `logs device details: ${logs[0]}`);
+  await requestPort({ anyDevice: true });
+  check(JSON.stringify(seen[1]) === "[]", "'show every device' uses an empty filter");
+  const hid = { vendorId: 0x1234, productId: 0x5678, productName: "Mouse", configurations: [{ interfaces: [{ interfaceNumber: 0, alternates: [{ interfaceClass: 3, endpoints: [] }] }] }] };
+  navigator.usb.requestDevice = async () => hid;
+  let err; try { await requestPort({ anyDevice: true }); } catch (e) { err = e; }
+  check(err && /no USB serial interface/.test(err.message), `non-serial device rejected clearly: ${err?.message.slice(0, 70)}`);
+}
 
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

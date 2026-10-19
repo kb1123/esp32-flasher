@@ -33,8 +33,15 @@
     <p class="status" id="connStatus"></p>
     <details class="small">
       <summary>Board not in the list?</summary>
-      <p>Check that BOOT was held while plugging in, and that the cable carries data (some charge-only cables don't). You can also list every USB serial device:</p>
-      <button id="connectAny" class="secondary">Show all USB serial devices</button>
+      <p>First, list every USB device your phone can see:</p>
+      <button id="connectAny" class="secondary">Show every USB device</button>
+      <p>If that list is empty too, the phone isn't detecting the board at all:</p>
+      <ul class="howto">
+        <li><b>Is the board powered?</b> Its LED should light when plugged into the phone. If not, the phone isn't supplying power.</li>
+        <li><b>OTG setting:</b> some phones (Samsung, OnePlus, Oppo, Xiaomi) need <i>OTG</i> switched on in Settings, and turn it off again after ~10 minutes idle.</li>
+        <li><b>Cable:</b> try a different one. Many USB-C cables are charge-only. A USB-A OTG adapter plus a USB-A to USB-C cable often works when a C-to-C cable doesn't.</li>
+        <li><b>Android notification:</b> after plugging in, pull down notifications. If you see "USB charging this device" or a device-access prompt, tap it and allow Chrome.</li>
+      </ul>
     </details>
   </section>
 
