@@ -30,6 +30,11 @@ struct OtaConfig {
   bool appOwnsRoot = false;               // true: the app serves "/", update page stays at /update
   int ledPin = -1;                        // WS2812 data pin for otaSetLed, or -1
 
+  // Optional: return a reason (e.g. "Stop the motor first") while the app can't
+  // tolerate flash writes; firmware uploads, slot switches, password and Wi-Fi
+  // changes are refused with that message. Return nullptr when it's fine.
+  const char *(*busyReason)() = nullptr;
+
   // W5500 Ethernet over SPI (all -1 = no Ethernet)
   int ethSck = -1, ethMiso = -1, ethMosi = -1, ethCs = -1, ethInt = -1, ethRst = -1;
 };

@@ -23,6 +23,18 @@
       "address": 0,
       "size": 1270224,
       "md5": "6e43842e4ace31c10f81acdd973ea0cb"
+    },
+    {
+      "id": "camera-stepper",
+      "name": "Camera + stepper bench",
+      "version": "1.0.0",
+      "board": "Waveshare ESP32-S3-ETH",
+      "chip": "ESP32-S3",
+      "description": "Camera tab plus an A4988 stepper tab: 20-1000 rpm, acceleration limit, microstepping off / 1/4 / auto. STEP on IO3 or IO17, MS2 on IO16.",
+      "file": "camera-stepper-FULL-FLASH-0x0.bin",
+      "address": 0,
+      "size": 1307088,
+      "md5": "3ffd1b03e2028bbc7a430b51d983f7cb"
     }
   ]
 }

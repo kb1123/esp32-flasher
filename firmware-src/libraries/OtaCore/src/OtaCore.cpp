@@ -197,6 +197,7 @@ static void serviceStation() {
 }
 
 // ---------------------------------------------------------------- web helpers
+static const char *busy() { return cfg.busyReason ? cfg.busyReason() : nullptr; }
 static bool fromHotspot() { return server.client().localIP() == WiFi.softAPIP(); }
 
 // Hotspot clients already proved they know the password (WPA2); others get a login prompt.
@@ -220,6 +221,13 @@ static String jstr(const String &s) { return "\"" + jsonEscape(s) + "\""; }
 static void sendJson(int code, const String &j) {
   server.sendHeader("Cache-Control", "no-store");
   server.send(code, "application/json", j);
+}
+// For handlers that write flash: answers 409 with the app's reason and returns true if busy.
+static bool refuseIfBusy() {
+  const char *why = busy();
+  if (!why) return false;
+  sendJson(409, "{\"ok\":false,\"error\":" + jstr(why) + "}");
+  return true;
 }
 
 // ---------------------------------------------------------------- handlers
@@ -250,6 +258,8 @@ static void handleStatus() {
   j += ",\"uptime\":" + String(millis() / 1000);
   j += ",\"heap\":" + String(ESP.getFreeHeap()) + ",\"psram\":" + String(ESP.getFreePsram());
   j += ",\"maxApp\":" + String(esp_ota_get_next_update_partition(NULL)->size);
+  const char *why = busy();
+  j += ",\"busy\":" + (why ? jstr(why) : String("null"));
   j += ",\"defaultPass\":" + String(otaPass == OTA_DEFAULT_PASS ? "true" : "false");
   j += "}";
   sendJson(200, j);
@@ -271,6 +281,7 @@ static void handleUploadChunk() {
   if (up.status == UPLOAD_FILE_START) {
     uploadOk = false; uploadError = ""; uploadBytes = 0;
     if (!fromHotspot() && !server.authenticate(OTA_USER, otaPass.c_str())) { uploadError = "unauthorized"; return; }
+    if (const char *why = busy()) { uploadError = why; return; }
     updating = true;
     otaSetLed(20, 0, 20);
     Serial.printf("[ota] receiving %s\n", up.filename.c_str());
@@ -313,7 +324,7 @@ static void handleUploadDone() {
 
 // Boot the firmware in the other slot (the previous one, unless an upload replaced it).
 static void handleSwitch() {
-  if (!otaAuthorize()) return;
+  if (!otaAuthorize() || refuseIfBusy()) return;
   const esp_partition_t *p = esp_ota_get_next_update_partition(NULL);
   esp_err_t err = p ? esp_ota_set_boot_partition(p) : ESP_ERR_NOT_FOUND;  // validates the image first
   if (err != ESP_OK) {
@@ -326,7 +337,7 @@ static void handleSwitch() {
 }
 
 static void handlePassword() {
-  if (!otaAuthorize()) return;
+  if (!otaAuthorize() || refuseIfBusy()) return;
   String np = server.arg("new");
   if (np.length() < 8 || np.length() > 63) { sendJson(400, "{\"ok\":false,\"error\":\"use 8 to 63 characters\"}"); return; }
   prefs.putString("pass", np);
@@ -367,7 +378,7 @@ static void handleScan() {
 }
 
 static void handleWifiJoin() {
-  if (!otaAuthorize()) return;
+  if (!otaAuthorize() || refuseIfBusy()) return;
   String ssid = server.arg("ssid"), pass = server.arg("pass");
   if (!ssid.length() || ssid.length() > 32) { sendJson(400, "{\"ok\":false,\"error\":\"network name required\"}"); return; }
   if (pass.length() && (pass.length() < 8 || pass.length() > 63)) {
@@ -383,7 +394,7 @@ static void handleWifiJoin() {
 }
 
 static void handleWifiForget() {
-  if (!otaAuthorize()) return;
+  if (!otaAuthorize() || refuseIfBusy()) return;
   prefs.remove("ssid"); prefs.remove("wpass");
   WiFi.setAutoReconnect(false);
   WiFi.disconnect(false, true);

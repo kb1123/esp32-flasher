@@ -38,11 +38,13 @@ Put the `.bin` in `firmware/` and add an entry to `firmware/manifest.json` with 
 | `firmware-src/libraries/OtaCore/` | Shared library every firmware links: Wi-Fi hotspot with captive portal, home Wi-Fi, Ethernet, the update page at `/update`, automatic rollback, and switching back to the firmware in the other slot. |
 | `firmware-src/ota-base/` | The starting firmware: just OtaCore plus a status LED. Copy it to start a new project. |
 | `firmware-src/camera-viewer/` | Live camera feed on the hotspot's front page (MJPEG on port 81), with snapshot and picture controls. |
+| `firmware-src/camera-stepper/` | Camera tab plus an A4988 stepper bench: 20–1000 rpm, acceleration limit, microstepping off / ¼ / auto with phase-aligned switching, live speed chart. STEP on IO3 or IO17 (selectable), MS2 on IO16. Motion logic in `motion.h`. |
 | `firmware-src/build.sh` | `./build.sh <sketch-folder>` builds the `-OTA.bin` and the `-FULL-FLASH-0x0.bin`. |
 | `builds/` | Ready-to-upload `-OTA.bin` files. |
 
-New project checklist: copy `ota-base`, change `OTA_FIRMWARE("name", "version")`, keep `otaCoreBegin()` / `otaCoreLoop()`, never block `loop()` for long, and set `appOwnsRoot = true` if your app serves `/`.
+New project checklist: copy `ota-base`, change `OTA_FIRMWARE("name", "version")`, keep `otaCoreBegin()` / `otaCoreLoop()`, never block `loop()` for long, and set `appOwnsRoot = true` if your app serves `/`. If your app has timing-critical interrupts, set `busyReason` so uploads and other flash writes are refused while it's busy.
 
 ## Tests
 
-`node tests/run.mjs` (Node 22+) runs the real flasher code against a simulated ESP32-S3 over a fake WebUSB device.
+- `node tests/run.mjs` (Node 22+) runs the real flasher code against a simulated ESP32-S3 over a fake WebUSB device.
+- `g++ -std=c++17 -O2 -I firmware-src/camera-stepper tests/motion_sim.cpp -o motion_sim && ./motion_sim` replays the stepper ramp and step interrupt on the host: speed accuracy, acceleration limit, microstep-switch alignment and continuity, auto-switch hysteresis, stopping.
