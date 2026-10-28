@@ -35,6 +35,18 @@
       "address": 0,
       "size": 1307088,
       "md5": "3ffd1b03e2028bbc7a430b51d983f7cb"
+    },
+    {
+      "id": "bench",
+      "name": "Bench: camera, stepper, signals",
+      "version": "1.0.0",
+      "board": "Waveshare ESP32-S3-ETH",
+      "chip": "ESP32-S3",
+      "description": "Camera, A4988 stepper bench, and 3 signal outputs (sine/triangle/saw/square/DC) on IO43, IO44, IO17.",
+      "file": "bench-FULL-FLASH-0x0.bin",
+      "address": 0,
+      "size": 1339872,
+      "md5": "ae9a77a244cdcd23b00e4bde9def91da"
     }
   ]
 }

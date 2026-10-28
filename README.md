@@ -39,6 +39,7 @@ Put the `.bin` in `firmware/` and add an entry to `firmware/manifest.json` with 
 | `firmware-src/ota-base/` | The starting firmware: just OtaCore plus a status LED. Copy it to start a new project. |
 | `firmware-src/camera-viewer/` | Live camera feed on the hotspot's front page (MJPEG on port 81), with snapshot and picture controls. |
 | `firmware-src/camera-stepper/` | Camera tab plus an A4988 stepper bench: 20–1000 rpm, acceleration limit, microstepping off / ¼ / auto with phase-aligned switching, live speed chart. STEP on IO3 or IO17 (selectable), MS2 on IO16. Motion logic in `motion.h`. |
+| `firmware-src/bench/` | camera-stepper plus a **Signals** tab: three outputs (OUT1 IO43 / header 20, OUT2 IO44 / header 19, OUT3 IO17 / header 7 while STEP is on IO3) with sine, triangle, sawtooth, square and DC. Analog shapes are 312.5 kHz PWM updated at 31.25 kHz (add 1 kΩ + 33 nF per output); squares ≥ 5 Hz come from a hardware timer (up to 20 kHz). Math in `wavecore.h`. |
 | `firmware-src/build.sh` | `./build.sh <sketch-folder>` builds the `-OTA.bin` and the `-FULL-FLASH-0x0.bin`. |
 | `builds/` | Ready-to-upload `-OTA.bin` files. |
 
@@ -47,4 +48,5 @@ New project checklist: copy `ota-base`, change `OTA_FIRMWARE("name", "version")`
 ## Tests
 
 - `node tests/run.mjs` (Node 22+) runs the real flasher code against a simulated ESP32-S3 over a fake WebUSB device.
+- `g++ -std=c++17 -O2 -I firmware-src/bench tests/wave_test.cpp -o wave_test && ./wave_test` checks the signal generator: frequency accuracy, levels, shapes, phase offsets, clipping, hardware-square timer settings.
 - `g++ -std=c++17 -O2 -I firmware-src/camera-stepper tests/motion_sim.cpp -o motion_sim && ./motion_sim` replays the stepper ramp and step interrupt on the host: speed accuracy, acceleration limit, microstep-switch alignment and continuity, auto-switch hysteresis, stopping.
